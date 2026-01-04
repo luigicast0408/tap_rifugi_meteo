@@ -1,4 +1,5 @@
 services:
+  # --- INGESTION SERVICES ---
   huts-fech:
     build:
       context: ../../
@@ -27,6 +28,19 @@ services:
     networks:
       - tap
 
+  # --- LOG SHIPPER ---
+  fluent-bit:
+    image: fluent/fluent-bit:latest
+    container_name: fluent-bit
+    volumes:
+      - ../fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf
+      - ../fluent-bit/parsers.conf:/fluent-bit/etc/parsers.conf
+      - ../../data:/data
+    depends_on:
+      - weather-fech
+      - kafka
+    networks:
+      - tap
 networks:
   tap:
     driver: bridge
