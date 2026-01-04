@@ -6,8 +6,8 @@ import requests
 from datetime import datetime, timezone
 
 # Paths configured for Docker container volumes
-INPUT_FILE = "../../data/huts.json"
-OUTPUT_FILE = "../../data/weather.json"
+INPUT_FILE = "/data/huts.json"
+OUTPUT_FILE = "/data/weather.json"
 
 
 def fetch_weather(lat, lon):

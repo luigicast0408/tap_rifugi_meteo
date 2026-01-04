@@ -3,7 +3,7 @@ import json
 import requests
 import time
 
-OUTPUT_FILE = "../../data/huts.json"
+OUTPUT_FILE = "/data/huts.json"
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 
 # Regions with Bounding Boxes (South, West, North, East)
