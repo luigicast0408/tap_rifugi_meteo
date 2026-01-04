@@ -1,0 +1,32 @@
+services:
+  huts-fech:
+    build:
+      context: ../../
+      dockerfile: src/docker/Dockerfile
+    container_name: huts-fech
+    volumes:
+      - ../../:/app
+      - ../../data:/data
+    working_dir: /app
+    command: python -u src/ingestion/fetch_huts.py
+    networks:
+      - tap
+
+  weather-fech:
+    build:
+      context: ../../
+      dockerfile: src/docker/Dockerfile
+    container_name: weather-fech
+    depends_on:
+      - huts-fech
+    volumes:
+      - ../../:/app
+      - ../../data:/data
+    working_dir: /app
+    command: python -u src/ingestion/fetch_weather.py
+    networks:
+      - tap
+
+networks:
+  tap:
+    driver: bridge
