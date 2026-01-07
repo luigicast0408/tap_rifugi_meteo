@@ -1,0 +1,5 @@
+.venv
+data
+data/huts.json
+data/weather.json
+models
