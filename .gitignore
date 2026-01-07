@@ -1,5 +1,12 @@
+.idea
+.idea/misc.xml
+.idea/modules.xml
+.idea/inspectionProfiles
 .venv
 data
 data/huts.json
 data/weather.json
-models
+models/saved_models
+data/checkpoints
+src/docker/elasticsearch_data
+src/docker/kibana_data
