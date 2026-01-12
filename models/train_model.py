@@ -1,9 +1,11 @@
+from pyspark.mllib.clustering import KMeans
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.ml.feature import VectorAssembler, StandardScaler
 from pyspark.ml.classification import RandomForestClassifier
+from pyspark.ml.clustering import  KMeans
 from pyspark.ml import Pipeline
-from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator, ClusteringEvaluator
 
 spark = SparkSession.builder.appName("Advanced_Trainer").getOrCreate()
 spark.sparkContext.setLogLevel("ERROR")
@@ -46,17 +48,37 @@ rf = RandomForestClassifier(
     seed=42
 )
 
-pipeline = Pipeline(stages=[assembler, scaler, rf])
-model = pipeline.fit(train_set)
+pipeline_rf = Pipeline(stages=[assembler, scaler, rf])
+rf_model = pipeline_rf.fit(train_set)
+
+kmeans = KMeans(
+    featuresCol="features",
+    predictionCol="cluster_id",
+    k=3,
+    seed=1
+)
+
+pipeline_km = Pipeline(stages=[assembler,scaler,kmeans])
+km_model = pipeline_km.fit(train_set)
 
 # 4. RATING
-predictions = model.transform(test_set)
-evaluator = MulticlassClassificationEvaluator(labelCol="label", predictionCol="prediction", metricName="accuracy")
-accuracy = evaluator.evaluate(predictions)
+predictions_rf = rf_model.transform(test_set)
+evaluator_rf = MulticlassClassificationEvaluator(labelCol="label", predictionCol="prediction", metricName="accuracy")
+accuracy = evaluator_rf.evaluate(predictions_rf)
+
+# The validation of k-means is on the complete set or in the train
+km_predictions = km_model.transform(train_df_raw)
+km_evaluator = ClusteringEvaluator(featuresCol="features", predictionCol="cluster_id", metricName="silhouette")
+silhouette = km_evaluator.evaluate(km_predictions)
+print(f"K-Means Silhouette Score: {silhouette:.2f}")
 
 
-MODEL_PATH = "/opt/spark/work-dir/models/saved_models/rf_weather_risk_model"
-model.write().overwrite().save(MODEL_PATH)
+RF_PATH = "/opt/spark/work-dir/models/saved_models/rf_weather_risk_model"
+KM_PATH = "/opt/spark/work-dir/models/saved_models/kmeans_weather_cluster_model"
 
-print(f" Model saved on  {MODEL_PATH}")
+rf_model.write().overwrite().save(RF_PATH)
+km_model.write().overwrite().save(KM_PATH)
+
+print(f" Model saved on  {RF_PATH}")
+print(f" Model saved on  {KM_PATH}")
 spark.stop()
