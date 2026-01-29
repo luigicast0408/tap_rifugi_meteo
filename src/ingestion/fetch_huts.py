@@ -6,7 +6,6 @@ import time
 OUTPUT_FILE = "/data/huts.json"
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 
-# Regions with Bounding Boxes (South, West, North, East)
 REGIONS = {
     "Abruzzo": "41.7,13.0,42.9,15.1",
     "Basilicata": "39.9,15.3,41.2,16.9",
@@ -31,10 +30,13 @@ REGIONS = {
 }
 
 def fetch_huts_for_bbox(bbox):
-    """Executes Overpass query with increased timeout and retry logic."""
     query = f"""
     [out:json][timeout:180];
-    node["tourism"="alpine_hut"]({bbox});
+    (
+      node["tourism"="alpine_hut"]({bbox});
+      node["tourism"="wilderness_hut"]({bbox});
+      node["shelter_type"="basic_hut"]({bbox});
+    );
     out;
     """
     max_retries = 3
@@ -47,41 +49,54 @@ def fetch_huts_for_bbox(bbox):
         except Exception as e:
             print(f"Warning: Attempt {attempt + 1} failed for bbox {bbox}: {e}")
             if attempt < max_retries - 1:
-                print("Waiting 30 seconds before retrying...")
                 time.sleep(30)
             else:
-                print(f"Error: Critical failure for region with bbox {bbox}")
                 return []
 
 def main():
-    print(f"Starting data acquisition. Working directory: {os.getcwd()}")
     output_dir = os.path.dirname(OUTPUT_FILE)
-    if not os.path.exists(output_dir):
+    if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
+    seen_huts = set()
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         for region, bbox in REGIONS.items():
-            print(f"Fetching huts for region: {region}...")
+            print(f"Acquisizione regione: {region}...")
             huts = fetch_huts_for_bbox(bbox)
-            print(f"Success: Found {len(huts)} huts")
 
+            saved_count = 0
             for h in huts:
-                # Structure record for Spark/Elasticsearch compatibility
+                h_id = h.get("id")
+
+                if h_id in seen_huts:
+                    continue
+
+                tags = h.get("tags", {})
+                name = tags.get("name")
+                lat = h.get("lat")
+                lon = h.get("lon")
+
+                if not name or name.strip() == "" or name.lower() == "unnamed hut" or not lat or not lon:
+                    continue
+
                 record = {
-                    "hut_id": h.get("id"),
-                    "name": h.get("tags", {}).get("name", "Unnamed Hut"),
-                    "lat": h.get("lat"),
-                    "lon": h.get("lon"),
+                    "hut_id": h_id,
+                    "name": name.strip(),
+                    "lat": lat,
+                    "lon": lon,
                     "region": region,
                     "ingestion_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 }
 
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                seen_huts.add(h_id)
+                saved_count += 1
 
             f.flush()
             os.fsync(f.fileno())
-            print("Waiting 15 seconds to respect rate limits...")
-            time.sleep(15)
+            print(f" {saved_count}  {region}.")
+            time.sleep(5)
+
 
 if __name__ == "__main__":
     main()
