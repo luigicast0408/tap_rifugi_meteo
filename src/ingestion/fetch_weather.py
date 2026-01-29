@@ -1,118 +1,110 @@
 import os
 import json
 import time
-import random
 import requests
 from datetime import datetime, timezone
 
-# Paths configured for Docker container volumes
 INPUT_FILE = "/data/huts.json"
 OUTPUT_FILE = "/data/weather.json"
 
+BATCH_SIZE = 800
+MIN_SECONDS_BETWEEN_CALLS = 0.25
+SLEEP_BETWEEN_CYCLES = 30
+BACKOFF_SECONDS = 60
 
-def fetch_weather(lat, lon):
-    """Fetches current weather from Open-Meteo with retry logic."""
+api_calls = []
+
+
+def is_valid_hut(hut):
+    name = hut.get("name")
+    if not name: return False
+    name_clean = name.lower().strip()
+    blacklist = ["rifugio", "bivacco", "malga", "unknown", "unnamed"]
+    return not any(x in name_clean for x in blacklist)
+
+
+def allow_api_call():
+    now = time.time()
+    api_calls[:] = [t for t in api_calls if now - t < 60]
+    return len(api_calls) < 300
+
+
+def fetch_weather_api(lat, lon):
+    if lat is None or lon is None: return None
+    while not allow_api_call():
+        time.sleep(0.5)
+
     url = (f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
-           f"&current=temperature_2m,relative_humidity_2m,wind_speed_10m")
+           f"&current=temperature_2m,relative_humidity_2m,wind_speed_10m,"
+           f"precipitation,weather_code,cloud_cover")
 
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(url, timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            current = data.get("current", {})
+    headers = {'User-Agent': 'UniversityProject/1.0'}
 
-            return {
-                "temperature": current.get("temperature_2m"),
-                "wind_speed": current.get("wind_speed_10m"),
-                "humidity": current.get("relative_humidity_2m")
-            }
-        except Exception as e:
-            print(f"Warning: Attempt {attempt + 1} failed for coordinates ({lat}, {lon}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(2)
-            else:
-                print(f"Error: Failed to fetch weather data for ({lat}, {lon})")
-                return None
-    return None
+    try:
+        response = requests.get(url, timeout=10, headers=headers)
+        if response.status_code == 429:
+            print(f"[RATE LIMIT] Wait {BACKOFF_SECONDS}s...")
+            time.sleep(BACKOFF_SECONDS)
+            return None
 
-
-def process_hut_event(hut):
-    """Processes weather data for a selected hut and returns a structured event."""
-    lat = hut.get("lat")
-    lon = hut.get("lon")
-    name = hut.get("name", "Unknown Hut")
-
-    if lat is None or lon is None:
+        response.raise_for_status()
+        api_calls.append(time.time())
+        return response.json().get("current", {})
+    except Exception as e:
+        print(f"Errore API: {e}")
         return None
-
-    weather = fetch_weather(lat, lon)
-
-    if weather is not None:
-        return {
-            "event_type": "weather_update",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "station_name": name,
-            "location": {
-                "lat": lat,
-                "lon": lon
-            },
-            "temperature": weather["temperature"],
-            "humidity": weather["humidity"],
-            "wind_speed": weather["wind_speed"]
-        }
-    return None
 
 
 def main():
-    print(f"Starting Weather Ingestion Service. Working directory: {os.getcwd()}")
-
-    # Step 1: Wait for the source file and load huts
+    print("Weather Ingestion Service Start")
     huts = []
     while not huts:
-        if not os.path.exists(INPUT_FILE):
-            print(f"Waiting for source file: {INPUT_FILE}...")
-            time.sleep(5)
-            continue
-
-        try:
-            with open(INPUT_FILE, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            huts.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            continue
-        except Exception as e:
-            print(f"Error reading source file: {e}")
-
-        if not huts:
-            print("Source file is empty or invalid. Waiting for data...")
+        if os.path.exists(INPUT_FILE) and os.path.getsize(INPUT_FILE) > 0:
+            try:
+                with open(INPUT_FILE, "r") as f:
+                    huts = [json.loads(l) for l in f if l.strip()] # read line of line
+                    huts = [h for h in huts if is_valid_hut(h)]    # check if huts is valid
+            except Exception as e:
+                print(f"Errore lettura huts.json: {e}")
+                time.sleep(5)
+        else:
+            print(" Wait of huts.json...")
             time.sleep(5)
 
-    print(f"Success: Loaded {len(huts)} huts. Entering streaming loop.")
+    print(f"Load {len(huts)}  valid hunts.")
 
-    # Step 2: Continuous streaming loop
     while True:
-        try:
-            selected_hut = random.choice(huts)
-            weather_event = process_hut_event(selected_hut)
+        open(OUTPUT_FILE, "w").close()
 
-            if weather_event:
-                with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(weather_event, ensure_ascii=False) + "\n")
-                    # Force write to disk to ensure synchronization
-                    f.flush()
-                    os.fsync(f.fileno())
+        print(f"[CYCLE START] {datetime.now().strftime('%H:%M:%S')}")
+        written = 0
 
-                print(f"Update sent: {weather_event['station_name']} | " f"Temp: {weather_event['temperature']}°C")
-            time.sleep(5)
+        for hut in huts[:BATCH_SIZE]:
+            data = fetch_weather_api(hut.get("lat"), hut.get("lon"))
+            if not data: continue
+            event = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "hut_name": hut.get("name"),
+                "region": hut.get("region", "Unknown"),
+                "temperature": data.get("temperature_2m"),
+                "humidity": data.get("relative_humidity_2m"),
+                "wind_speed": data.get("wind_speed_10m"),
+                "precipitation": data.get("precipitation"),
+                "weather_code": data.get("weather_code"),
+                "cloud_cover": data.get("cloud_cover"),
+                "location": {"lat": hut.get("lat"), "lon": hut.get("lon")}
+            }
 
-        except Exception as e:
-            print(f"Critical error in streaming loop: {e}")
-            time.sleep(5)
+            with open(OUTPUT_FILE, "a") as f:
+                f.write(json.dumps(event) + "\n")
+
+            written += 1
+            if written % 50 == 0:
+                print(f" Send: {written}/{len(huts)}")
+            time.sleep(MIN_SECONDS_BETWEEN_CALLS)
+
+        print(f"[CYCLE END] Send {written} record. Wait {SLEEP_BETWEEN_CYCLES}s...")
+        time.sleep(SLEEP_BETWEEN_CYCLES)
 
 
 if __name__ == "__main__":
