@@ -1,4 +1,3 @@
-from pyspark.mllib.clustering import KMeans
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.ml.feature import VectorAssembler, StandardScaler
@@ -11,22 +10,21 @@ spark = SparkSession.builder.appName("Advanced_Trainer").getOrCreate()
 spark.sparkContext.setLogLevel("ERROR")
 
 # 1. DATASET GENERATION
-num_samples = 5000
+num_samples = 7000
 df = spark.range(0, num_samples).select(
     (F.rand(42) * 50 - 15).alias("temperature"),
     (F.rand(43) * 100).alias("humidity"),
     (F.rand(44) * 120).alias("wind_speed"),
-    (F.rand(46) * 23).cast("int").alias("hour")
+    (F.rand(45) * 10).alias("precipitation"),
+    (F.rand(46) * 95).cast("int").alias("weather_code"),
+    (F.rand(47) * 23).cast("int").alias("hour")
 )
 
 
 # 2. CALCULATE INDEX OF RISK
 train_df_raw = df.withColumn("label",
-    F.when((F.col("wind_speed") > 80) |
-           ((F.col("temperature") < -5) & (F.col("wind_speed") > 40)), 2)
-     .when((F.col("wind_speed") > 50) |
-           (F.col("temperature") < 0) |
-           ((F.col("humidity") > 85) & (F.col("wind_speed") > 25)), 1)
+    F.when((F.col("wind_speed") > 80) | (F.col("precipitation") > 5) | (F.col("weather_code") >= 80), 2)
+     .when((F.col("wind_speed") > 50) | (F.col("temperature") < 0) | (F.col("precipitation") > 1), 1)
      .otherwise(0)
 )
 
@@ -34,7 +32,7 @@ train_df_raw = df.withColumn("label",
 
 # 3. PIPELINE ML
 assembler = VectorAssembler(
-    inputCols=["temperature", "humidity", "wind_speed", "hour"],
+    inputCols=["temperature", "humidity", "wind_speed", "precipitation", "weather_code", "hour"],
     outputCol="features_raw"
 )
 
@@ -54,7 +52,7 @@ rf_model = pipeline_rf.fit(train_set)
 kmeans = KMeans(
     featuresCol="features",
     predictionCol="cluster_id",
-    k=3,
+    k=4,
     seed=1
 )
 

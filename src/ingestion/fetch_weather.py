@@ -7,12 +7,9 @@ from datetime import datetime, timezone
 INPUT_FILE = "/data/huts.json"
 OUTPUT_FILE = "/data/weather.json"
 
-BATCH_SIZE = 800
-MIN_SECONDS_BETWEEN_CALLS = 0.25
-SLEEP_BETWEEN_CYCLES = 30
-BACKOFF_SECONDS = 60
-
-api_calls = []
+CHUNK_SIZE = 25  #  25 rifugi per volt
+PAUSE_BETWEEN_CHUNKS = 5  # Aspetto 5 secondi
+SLEEP_BETWEEN_CYCLES = 1800  # 30 Minuti di pausa totale
 
 
 def is_valid_hut(hut):
@@ -23,87 +20,96 @@ def is_valid_hut(hut):
     return not any(x in name_clean for x in blacklist)
 
 
-def allow_api_call():
-    now = time.time()
-    api_calls[:] = [t for t in api_calls if now - t < 60]
-    return len(api_calls) < 300
+def fetch_batch_weather(huts_subset):
+    if not huts_subset: return []
 
+    lats = [str(h['lat']) for h in huts_subset]
+    lons = [str(h['lon']) for h in huts_subset]
 
-def fetch_weather_api(lat, lon):
-    if lat is None or lon is None: return None
-    while not allow_api_call():
-        time.sleep(0.5)
-
-    url = (f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
-           f"&current=temperature_2m,relative_humidity_2m,wind_speed_10m,"
-           f"precipitation,weather_code,cloud_cover")
-
-    headers = {'User-Agent': 'UniversityProject/1.0'}
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": ",".join(lats),
+        "longitude": ",".join(lons),
+        "current": "temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation,weather_code,cloud_cover",
+        "timezone": "UTC"
+    }
+    headers = {'User-Agent': 'UniversityProjectDemo/1.0'}
 
     try:
-        response = requests.get(url, timeout=10, headers=headers)
+        response = requests.get(url, params=params, headers=headers, timeout=20)
+
         if response.status_code == 429:
-            print(f"[RATE LIMIT] Wait {BACKOFF_SECONDS}s...")
-            time.sleep(BACKOFF_SECONDS)
+            print("[429] Rate Limit!")
             return None
 
         response.raise_for_status()
-        api_calls.append(time.time())
-        return response.json().get("current", {})
+        data = response.json()
+        if not isinstance(data, list): data = [data]
+        return data
     except Exception as e:
-        print(f"Errore API: {e}")
-        return None
+        print(f"Errore Batch: {e}")
+        return []
 
 
 def main():
-    print("Weather Ingestion Service Start")
     huts = []
     while not huts:
         if os.path.exists(INPUT_FILE) and os.path.getsize(INPUT_FILE) > 0:
             try:
                 with open(INPUT_FILE, "r") as f:
-                    huts = [json.loads(l) for l in f if l.strip()] # read line of line
-                    huts = [h for h in huts if is_valid_hut(h)]    # check if huts is valid
+                    huts = [json.loads(l) for l in f if l.strip()]
+                    huts = [h for h in huts if is_valid_hut(h)]
             except Exception as e:
-                print(f"Errore lettura huts.json: {e}")
+                print(f"Wait file: {e}")
                 time.sleep(5)
         else:
-            print(" Wait of huts.json...")
+            print("Wait huts.json...")
             time.sleep(5)
 
-    print(f"Load {len(huts)}  valid hunts.")
+    print(f" Load {len(huts)} huts")
 
     while True:
         open(OUTPUT_FILE, "w").close()
-
         print(f"[CYCLE START] {datetime.now().strftime('%H:%M:%S')}")
-        written = 0
 
-        for hut in huts[:BATCH_SIZE]:
-            data = fetch_weather_api(hut.get("lat"), hut.get("lon"))
-            if not data: continue
-            event = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "hut_name": hut.get("name"),
-                "region": hut.get("region", "Unknown"),
-                "temperature": data.get("temperature_2m"),
-                "humidity": data.get("relative_humidity_2m"),
-                "wind_speed": data.get("wind_speed_10m"),
-                "precipitation": data.get("precipitation"),
-                "weather_code": data.get("weather_code"),
-                "cloud_cover": data.get("cloud_cover"),
-                "location": {"lat": hut.get("lat"), "lon": hut.get("lon")}
-            }
+        total_processed = 0
+        for i in range(0, len(huts), CHUNK_SIZE):
+            chunk = huts[i:i + CHUNK_SIZE]
+            weather_results = fetch_batch_weather(chunk)
 
-            with open(OUTPUT_FILE, "a") as f:
-                f.write(json.dumps(event) + "\n")
+            if weather_results is None:
+                print("Block sleep fo 60 seconds")
+                time.sleep(60)
+                continue
 
-            written += 1
-            if written % 50 == 0:
-                print(f" Send: {written}/{len(huts)}")
-            time.sleep(MIN_SECONDS_BETWEEN_CALLS)
+            if not weather_results: continue
 
-        print(f"[CYCLE END] Send {written} record. Wait {SLEEP_BETWEEN_CYCLES}s...")
+            for hut_info, meteo_data in zip(chunk, weather_results):
+                current = meteo_data.get("current", {})
+                if not current: continue
+
+                event = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "hut_name": hut_info.get("name"),
+                    "region": hut_info.get("region", "Unknown"),
+                    "temperature": current.get("temperature_2m"),
+                    "humidity": current.get("relative_humidity_2m"),
+                    "wind_speed": current.get("wind_speed_10m"),
+                    "precipitation": current.get("precipitation"),
+                    "weather_code": current.get("weather_code"),
+                    "cloud_cover": current.get("cloud_cover"),
+                    "location": {"lat": hut_info.get("lat"), "lon": hut_info.get("lon")}
+                }
+
+                with open(OUTPUT_FILE, "a") as f:
+                    f.write(json.dumps(event) + "\n")
+
+                total_processed += 1
+
+            print(f" block ok {total_processed}/{len(huts)}")
+            time.sleep(PAUSE_BETWEEN_CHUNKS)
+
+        print(f"[CYCLE END]  ({SLEEP_BETWEEN_CYCLES}s)...")
         time.sleep(SLEEP_BETWEEN_CYCLES)
 
 
